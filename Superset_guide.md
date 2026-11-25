@@ -1,51 +1,15 @@
-# Superset + Trino + Iceberg Integration
+# Superset and Trino
 
-## Configuration Details
+Open Superset at `http://localhost:8088`. Credentials come from `SUPERSET_ADMIN_USERNAME` and `SUPERSET_ADMIN_PASSWORD` in `.env`.
 
-### Database Connection
-- **Database Name**: "Trino Iceberg"
-- **Connection URI**: `trino://admin@trino:8080/iceberg`
-- **Configured via**: Superset CLI (`superset set-database-uri`)
-- **Note**: Username 'admin' required for Trino authentication
+When adding a database in Superset, use the Docker network hostname `trino` and port `8080`. The Iceberg catalog is `iceberg`; tables are in schema `demo`. Superset's browser-facing URL is localhost, while its database connection must use the Compose service name.
 
-### Data Available
-- **Sales Table**: `iceberg.demo.sales` (903+ records)
-- **Products Table**: `iceberg.demo.products` (5 records)
+After the Trino catalog and tables are available, create or update the supplied dashboard:
 
-### Access Information
-- **Superset UI**: http://localhost:8088
-- **Credentials**: admin / admin
-- **Trino Coordinator**: http://localhost:8080
-
-## Sample Dashboard Queries
-
-The following queries work in Superset SQL Lab:
-
-```sql
--- Sales count by product
-SELECT p.name, COUNT(s.id) as sales_count
-FROM demo.sales s
-JOIN demo.products p ON s.product_id = p.id
-GROUP BY p.name
-ORDER BY sales_count DESC;
-
--- Revenue by product
-SELECT p.name, SUM(s.price * s.qty) as total_revenue
-FROM demo.sales s
-JOIN demo.products p ON s.product_id = p.id
-GROUP BY p.name
-ORDER BY total_revenue DESC;
-
--- Daily sales trends
-SELECT DATE(sale_ts) as sale_date, COUNT(*) as daily_sales
-FROM demo.sales
-GROUP BY DATE(sale_ts)
-ORDER BY sale_date;
+```bash
+set -a; source .env; set +a
+python3 -m pip install -r superset/requirements.txt
+python3 superset/setup_dashboard.py
 ```
 
-## Dashboard Creation Steps
-
-1. **Access Superset**: http://localhost:8088 (admin/admin)
-2. **SQL Lab**: Test queries with "Trino Iceberg" database
-3. **Create Charts**: Charts → + → Select "Trino Iceberg" → demo.sales table
-4. **Build Dashboard**: Dashboards → + → Add created charts
+It provisions product sale count, total units, revenue using `qty * price`, and daily revenue trend charts, then links them to the dashboard. The operation can be rerun without creating another copy. See the root README for direct Trino query examples.

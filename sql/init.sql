@@ -29,15 +29,15 @@ CREATE TABLE sales (
 -- Generate ~1000 rows over last 365 days using simpler approach
 INSERT INTO sales (product_id, qty, price, sale_ts)
 SELECT
-  (ROW_NUMBER() OVER () % 4) + 1 as product_id,
-  FLOOR(1 + (RAND() * 4)) as qty,
-  CASE ((ROW_NUMBER() OVER () % 4) + 1)
+  MOD(num, 4) + 1 as product_id,
+  MOD(num, 4) + 1 as qty,
+  CASE (MOD(num, 4) + 1)
     WHEN 1 THEN 9.99
     WHEN 2 THEN 19.99
     WHEN 3 THEN 29.99
     ELSE 49.99
   END as price,
-  DATE_SUB(NOW(), INTERVAL (1095 - ROW_NUMBER() OVER ()) DAY) + INTERVAL (RAND() * 86400) SECOND as sale_ts
+  DATE_SUB(NOW(), INTERVAL MOD(num, 365) DAY) as sale_ts
 FROM
   (SELECT a.N + b.N * 10 + c.N * 100 + 1 as num
    FROM (SELECT 0 AS N UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4

@@ -1,5 +1,9 @@
-FROM flink:1.19.3
+FROM flink:1.19.3@sha256:1bf0a2e91e8640900914dfd54ed605776778b1d978257e72438547004e49c6a9
 WORKDIR /opt/flink
+
+# Ensure freshly created named state volumes inherit write access for Flink.
+RUN mkdir -p /opt/flink/checkpoints /opt/flink/state \
+    && chown -R flink:flink /opt/flink/checkpoints /opt/flink/state
 
 # --- Required JARs only (no Hadoop/S3A) ---
 # MySQL CDC (works on 1.19)

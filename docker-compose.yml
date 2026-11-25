@@ -1,97 +1,162 @@
 services:
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
-    container_name: minio
+    image: ghcr.io/projekt-manager-org/minio@sha256:a1a8bd4ac40ad7881a245bab97323e18f971e4d4cba2c2007ec1bedd21cbaba2
     environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: minio123
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password-change-me}
     command: server /data --console-address ":9001"
     ports: ["9000:9000", "9001:9001"]
     volumes: [ "minio-data:/data" ]
 
   mc:
-    image: quay.io/minio/mc:latest
-    container_name: mc
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password-change-me}
+    image: ghcr.io/projekt-manager-org/mc@sha256:eb4ea9884b77704230e2423e9004d2fa738dc272876b9cc41a297d29443b8780
     depends_on:
-      - minio
+      minio:
+        condition: service_started
     entrypoint: ["/bin/sh","/create-bucket.sh"]
     volumes:
       - ./minio/create-bucket.sh:/create-bucket.sh:ro
 
   mysql:
-    image: mysql:8.0
-    container_name: mysql
+    image: mysql:8.0.46
     environment:
-      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-mysql-root-change-me}
     command: >
       --server-id=1 --log-bin=mysql-bin --binlog_format=ROW --binlog_row_image=FULL
       --gtid_mode=ON --enforce_gtid_consistency=ON
       --default_authentication_plugin=mysql_native_password
-    ports: ["3306:3306"]
+    ports: ["${MYSQL_PORT:-3307}:3306"]
     volumes:
       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
 
   jobmanager:
     build: .
     container_name: jobmanager
     environment:
-      - JOB_MANAGER_RPC_ADDRESS=jobmanager
-      - AWS_REGION=us-east-1
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      AWS_REGION: us-east-1
+      FLINK_PROPERTIES: |
+        execution.checkpointing.interval: 30s
+        execution.checkpointing.mode: EXACTLY_ONCE
+        execution.checkpointing.timeout: 2min
+        execution.checkpointing.min-pause: 10s
+        execution.checkpointing.max-concurrent-checkpoints: 1
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        restart-strategy.type: fixed-delay
+        restart-strategy.fixed-delay.attempts: 5
+        restart-strategy.fixed-delay.delay: 10s
     command: jobmanager
-    ports: ["8081:8081"]
+    ports: ["${FLINK_UI_PORT:-8083}:8081"]
     volumes:
-      - ./jobs/job.sql:/opt/flink/job.sql:ro
-      - ./jobs/products_streaming.sql:/opt/flink/products_streaming.sql:ro
-      - ./jobs/sales_streaming.sql:/opt/flink/sales_streaming.sql:ro
+      - ./jobs:/opt/flink/jobs:ro
+      - flink-checkpoints:/opt/flink/checkpoints
+      - flink-state:/opt/flink/state
     depends_on:
-      - mysql
-      - minio
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      mc:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/overview >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   taskmanager:
     build: .
     environment:
-      - JOB_MANAGER_RPC_ADDRESS=jobmanager
-      - AWS_REGION=us-east-1
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      AWS_REGION: us-east-1
+      FLINK_PROPERTIES: |
+        execution.checkpointing.interval: 30s
+        execution.checkpointing.mode: EXACTLY_ONCE
+        execution.checkpointing.timeout: 2min
+        execution.checkpointing.min-pause: 10s
+        execution.checkpointing.max-concurrent-checkpoints: 1
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        taskmanager.numberOfTaskSlots: 2
+        restart-strategy.type: fixed-delay
+        restart-strategy.fixed-delay.attempts: 5
+        restart-strategy.fixed-delay.delay: 10s
     command: taskmanager
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - flink-state:/opt/flink/state
     depends_on:
-      - jobmanager
-      - mysql
-      - minio
-    deploy:
-      replicas: 2
+      jobmanager:
+        condition: service_healthy
 
   trino:
     image: trinodb/trino:477
-    container_name: trino
-    ports: ["8080:8080"]
+    ports: ["${TRINO_PORT:-8082}:8080"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-local-mysql-root-change-me}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password-change-me}
     volumes:
       - ./trino/etc/catalog:/etc/trino/catalog:ro
       - ./trino/lib/mysql-connector-j-8.4.0.jar:/usr/lib/trino/plugin/iceberg/mysql-connector-j-8.4.0.jar:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      mc:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
 
   superset:
     image: apache/superset:3.1.0
-    container_name: superset
-    depends_on: [ trino ]
+    depends_on:
+      trino:
+        condition: service_healthy
     ports: ["8088:8088"]
     environment:
-      SUPERSET_SECRET_KEY: "superset-secret"
-      ADMIN_USERNAME: "admin"
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-local-superset-secret-key-change-before-sharing}
+      SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
       ADMIN_FIRST_NAME: "Admin"
       ADMIN_LAST_NAME: "User"
-      ADMIN_EMAIL: "admin@example.com"
-      ADMIN_PASSWORD: "admin"
+      ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.com}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-local-superset-password-change-me}
       SUPERSET_PORT: "8088"
       GUNICORN_CMD_ARGS: "--bind 0.0.0.0:8088 --workers 2 --timeout 120 --keep-alive 2"
-    entrypoint: ["/bin/sh","/docker-entrypoint.sh"]
+      SUPERSET_HOME: /app/superset_home
+    entrypoint: ["/bin/bash","/docker-entrypoint.sh"]
     volumes:
       - ./superset/docker-entrypoint.sh:/docker-entrypoint.sh:ro
+      - ./superset:/superset:ro
+      - superset-home:/app/superset_home
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8088/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
 
   soda:
     build: ./soda
-    container_name: soda
-    depends_on: [ trino ]
+    depends_on:
+      trino:
+        condition: service_healthy
     environment:
-      - PYTHONUNBUFFERED=1
+      PYTHONUNBUFFERED: "1"
+      MONITOR_INTERVAL_SECONDS: ${MONITOR_INTERVAL_SECONDS:-300}
+      FRESHNESS_MAX_HOURS: ${FRESHNESS_MAX_HOURS:-8760}
     volumes:
       - ./soda:/soda:ro
     restart: unless-stopped
@@ -99,3 +164,7 @@ services:
 
 volumes:
   minio-data:
+  mysql-data:
+  flink-checkpoints:
+  flink-state:
+  superset-home:
